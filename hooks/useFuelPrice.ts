@@ -17,7 +17,7 @@ export function useFuelPrice() {
       if (prices) setFuelPrices(prices);
       return prices;
     },
-    enabled: !isCacheValid && ApiConfig.fuelPrice.enabled,
+    enabled: !isCacheValid,
     staleTime: ApiConfig.fuelPrice.cacheTtlMs,
     initialData: isCacheValid ? fuelPrices ?? undefined : undefined,
   });

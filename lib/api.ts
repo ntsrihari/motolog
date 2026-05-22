@@ -1,7 +1,8 @@
 import { ApiConfig } from '@/config/api.config';
-import type { FuelPrice, ServiceCenter, Vehicle } from '@/types';
+import type { FuelPrice, ServiceCenter } from '@/types';
 import type { VehicleSpec } from '@/config/vehicles.config';
 import { SPEC_DATABASE } from '@/config/vehicles.config';
+import { getStaticFuelPrice } from '@/utils/fuelPrices';
 
 async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs: number) {
   const controller = new AbortController();
@@ -31,25 +32,30 @@ export interface RegistrationData {
 }
 
 export async function lookupRegistration(plate: string): Promise<RegistrationData | null> {
-  if (!ApiConfig.vehicleRegistration.vehicleInfo.key) return null;
+  const { rapidApi } = ApiConfig.vehicleRegistration;
+  if (!rapidApi.key) return null;
 
   try {
-    const { baseUrl, key, timeout } = ApiConfig.vehicleRegistration.vehicleInfo;
     const res = await fetchWithTimeout(
-      `${baseUrl}/rc-details?reg=${encodeURIComponent(plate)}`,
-      { headers: { 'x-api-key': key } },
-      timeout,
+      `${rapidApi.baseUrl}/vehicle-info?reg_no=${encodeURIComponent(plate)}`,
+      {
+        headers: {
+          'x-rapidapi-host': rapidApi.host,
+          'x-rapidapi-key': rapidApi.key,
+        },
+      },
+      rapidApi.timeout,
     );
     if (!res.ok) return null;
     const data = await res.json();
     return {
-      make: data.maker_desc ?? data.make,
-      model: data.model_desc ?? data.model,
-      year: data.manufactured_yr ? parseInt(data.manufactured_yr) : undefined,
-      fuelType: data.fuel_descr?.toLowerCase(),
-      registrationDate: data.reg_date,
-      insuranceExpiry: data.insurance_upto,
-      pucExpiry: data.pucc_upto,
+      make: data.maker_desc ?? data.make ?? data.vehicle_manufacturer_name,
+      model: data.model_desc ?? data.model ?? data.vehicle_model,
+      year: data.manufactured_yr ?? data.manufacture_year ? parseInt(data.manufactured_yr ?? data.manufacture_year) : undefined,
+      fuelType: (data.fuel_descr ?? data.fuel_type ?? '').toLowerCase() || undefined,
+      registrationDate: data.reg_date ?? data.registration_date,
+      insuranceExpiry: data.insurance_upto ?? data.insurance_validity,
+      pucExpiry: data.pucc_upto ?? data.pollution_upto,
       rcStatus: data.status ?? data.rc_status,
       ownerCount: data.owner_count ? parseInt(data.owner_count) : undefined,
       raw: data,
@@ -62,77 +68,71 @@ export async function lookupRegistration(plate: string): Promise<RegistrationDat
 export function lookupSpecs(make: string, model: string, year: number): VehicleSpec | null {
   const key = `${make.toLowerCase().replace(/\s/g, '')}_${model.toLowerCase().replace(/\s/g, '_')}_${year}`;
   if (SPEC_DATABASE[key]) return SPEC_DATABASE[key];
-
   const fuzzyKey = Object.keys(SPEC_DATABASE).find((k) =>
     k.startsWith(`${make.toLowerCase().replace(/\s/g, '')}_${model.toLowerCase().replace(/\s/g, '_')}`),
   );
   return fuzzyKey ? SPEC_DATABASE[fuzzyKey] : null;
 }
 
+// Returns static prices instantly — no API key required.
+// Prices sourced from PPAC/IOCL, updated periodically in utils/fuelPrices.ts.
 export async function fetchFuelPrices(city: string): Promise<FuelPrice | null> {
-  if (!ApiConfig.fuelPrice.enabled) return null;
-  if (!ApiConfig.fuelPrice.mypetrolprice.key) return null;
-
-  try {
-    const { baseUrl, key, timeout } = ApiConfig.fuelPrice.mypetrolprice;
-    const res = await fetchWithTimeout(
-      `${baseUrl}/fuel-price?city=${encodeURIComponent(city)}`,
-      { headers: { 'x-api-key': key } },
-      timeout,
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    return {
-      city,
-      petrol: parseFloat(data.petrol),
-      diesel: parseFloat(data.diesel),
-      cng: data.cng ? parseFloat(data.cng) : undefined,
-      date: new Date().toISOString().split('T')[0],
-      source: 'mypetrolprice.com',
-    };
-  } catch {
-    return null;
-  }
+  return getStaticFuelPrice(city);
 }
 
+// Uses OpenStreetMap Overpass API — completely free, no key required.
 export async function fetchNearbyServiceCenters(
   lat: number,
   lng: number,
   vehicleMake: string,
 ): Promise<ServiceCenter[]> {
-  const cfg = ApiConfig.maps;
-  const query = `${vehicleMake} service center`;
+  const radius = 10000;
+  const query = `
+    [out:json][timeout:10];
+    (
+      node["amenity"="car_repair"](around:${radius},${lat},${lng});
+      way["amenity"="car_repair"](around:${radius},${lat},${lng});
+      node["shop"="car_repair"](around:${radius},${lat},${lng});
+    );
+    out center 15;
+  `.trim();
 
   try {
-    if (cfg.provider === 'ola' && cfg.ola.key) {
-      const { baseUrl, key, timeout } = cfg.ola;
-      const res = await fetchWithTimeout(
-        `${baseUrl}/nearbysearch/json?location=${lat},${lng}&radius=${cfg.serviceCenter.radiusMeters}&keyword=${encodeURIComponent(query)}&api_key=${key}`,
-        {},
-        timeout,
-      );
-      if (!res.ok) return [];
-      const data = await res.json();
-      return (data.results ?? []).slice(0, 10).map((p: Record<string, unknown>) => ({
-        id: p.place_id as string,
-        name: p.name as string,
-        type: determineServiceCenterType(p.name as string, vehicleMake),
-        distanceKm: calcDistance(lat, lng, (p.geometry as Record<string, { lat: number; lng: number }>).location.lat, (p.geometry as Record<string, { lat: number; lng: number }>).location.lng),
-        rating: p.rating as number,
-        isOpen: (p.opening_hours as { open_now?: boolean })?.open_now,
-        address: (p.vicinity ?? p.formatted_address) as string,
-      }));
-    }
-    return [];
+    const res = await fetchWithTimeout(
+      'https://overpass-api.de/api/interpreter',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `data=${encodeURIComponent(query)}`,
+      },
+      12000,
+    );
+    if (!res.ok) return [];
+    const data = await res.json();
+    const elements: Record<string, unknown>[] = data.elements ?? [];
+
+    return elements.slice(0, 10).map((el, idx) => {
+      const tags = (el.tags ?? {}) as Record<string, string>;
+      const elLat = (el.lat ?? (el.center as { lat: number } | undefined)?.lat ?? lat) as number;
+      const elLng = (el.lon ?? (el.center as { lon: number } | undefined)?.lon ?? lng) as number;
+      return {
+        id: String(el.id ?? idx),
+        name: tags.name ?? tags['name:en'] ?? 'Car Repair',
+        type: determineType(tags.name ?? '', vehicleMake),
+        distanceKm: calcDistance(lat, lng, elLat, elLng),
+        address: [tags['addr:housenumber'], tags['addr:street'], tags['addr:city']]
+          .filter(Boolean)
+          .join(', ') || undefined,
+      };
+    }).sort((a, b) => a.distanceKm - b.distanceKm);
   } catch {
     return [];
   }
 }
 
-function determineServiceCenterType(name: string, make: string): ServiceCenter['type'] {
+function determineType(name: string, make: string): ServiceCenter['type'] {
   const lower = name.toLowerCase();
-  const makeKey = make.toLowerCase();
-  if (lower.includes(makeKey) || lower.includes('authorised') || lower.includes('authorized')) return 'oem';
+  if (lower.includes(make.toLowerCase()) || lower.includes('authoris') || lower.includes('authori')) return 'oem';
   if (lower.includes('multi') || lower.includes('car care') || lower.includes('motors')) return 'multibrand';
   return 'local';
 }
@@ -141,6 +141,8 @@ function calcDistance(lat1: number, lng1: number, lat2: number, lng2: number): n
   const R = 6371;
   const dLat = ((lat2 - lat1) * Math.PI) / 180;
   const dLng = ((lng2 - lng1) * Math.PI) / 180;
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos((lat1 * Math.PI) / 180) * Math.cos((lat2 * Math.PI) / 180) * Math.sin(dLng / 2) ** 2;
   return parseFloat((R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))).toFixed(1));
 }

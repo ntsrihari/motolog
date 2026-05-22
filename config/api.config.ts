@@ -1,3 +1,6 @@
+// Only EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY are required.
+// EXPO_PUBLIC_RAPIDAPI_KEY is optional — enables RC plate auto-fill on the lookup screen.
+// All other features (fuel prices, maps, service centers) work without any API key.
 export const ApiConfig = {
   supabase: {
     url: process.env.EXPO_PUBLIC_SUPABASE_URL ?? '',
@@ -5,17 +8,11 @@ export const ApiConfig = {
   },
 
   vehicleRegistration: {
-    provider: 'vehicleinfo' as 'vehicleinfo' | 'rapidapi',
-    vehicleInfo: {
-      baseUrl: 'https://api.vehicleinfo.in/v1',
-      key: process.env.EXPO_PUBLIC_VEHICLE_INFO_KEY ?? '',
-      timeout: 8000,
-      retries: 2,
-    },
+    // Uses RapidAPI "RTO Vehicle Information" endpoint. Optional — falls back to manual entry.
     rapidApi: {
-      baseUrl: 'https://vehicle-registration-india.p.rapidapi.com',
+      baseUrl: 'https://rto-vehicle-information-verification-india.p.rapidapi.com/api/v1/rc/vehicleinfo',
       key: process.env.EXPO_PUBLIC_RAPIDAPI_KEY ?? '',
-      host: 'vehicle-registration-india.p.rapidapi.com',
+      host: 'rto-vehicle-information-verification-india.p.rapidapi.com',
       timeout: 8000,
       retries: 2,
     },
@@ -23,39 +20,16 @@ export const ApiConfig = {
   },
 
   fuelPrice: {
-    enabled: true,
-    provider: 'mypetrolprice' as 'mypetrolprice' | 'rapidapi',
-    mypetrolprice: {
-      baseUrl: 'https://www.mypetrolprice.com/api',
-      key: process.env.EXPO_PUBLIC_FUEL_PRICE_KEY ?? '',
-      timeout: 5000,
-    },
+    // Static prices from utils/fuelPrices.ts — no API key needed.
     cacheTtlMs: 24 * 60 * 60 * 1000,
   },
 
   maps: {
-    provider: 'ola' as 'ola' | 'google',
-    ola: {
-      baseUrl: 'https://api.olamaps.io/places/v1',
-      key: process.env.EXPO_PUBLIC_OLA_MAPS_KEY ?? '',
-      timeout: 6000,
-    },
-    google: {
-      baseUrl: 'https://maps.googleapis.com/maps/api',
-      key: process.env.EXPO_PUBLIC_GOOGLE_MAPS_KEY ?? '',
-      timeout: 6000,
-    },
+    // OpenStreetMap Overpass API — free, no key required.
     serviceCenter: {
       cacheTtlMs: 60 * 60 * 1000,
       radiusMeters: 10000,
     },
-  },
-
-  tyres: {
-    enabled: false,
-    baseUrl: 'https://api.tyreplex.com/v1',
-    key: process.env.EXPO_PUBLIC_TYREPLEX_KEY ?? '',
-    cacheTtlMs: 48 * 60 * 60 * 1000,
   },
 
   ai: {
